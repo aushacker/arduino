@@ -1,5 +1,5 @@
 /*
- * A trivial that shows the difference between static and 
+ * A trivial sketch demonstrating the difference between static and 
  * automatic memory allocation.
  * 
  * Aushacker 9 July 2019
