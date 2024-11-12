@@ -1,28 +1,31 @@
 /*
  * Runs a 16 bit timer in CTC mode on a Mega2560 R3 board.
+ * Generates a basic DCC idle frame. 
  *
  * aushacker
- * 11 Nov 2024
+ * 12 Nov 2024
  */
-const int PIN_DCC = 46;
-const int PIN_DEBUG1 = 22;
-const int PIN_DEBUG2 = 23;
+
+const int PIN_DCC = 46;     // OCR5A output pin to drive DCC signal
+const int PIN_DEBUG1 = 22;  // Utility pin for code tracing in logic analyser
+const int PIN_DEBUG2 = 23;  // Utility pin for code tracing in logic analyser
 
 // Counter periods for DCC logic @16MHz
-const int DCC_ONE = 928 - 1;
-const int DCC_ZERO = 1600 - 1;
+const int DCC_ONE = 928 - 1;    // 58us (half period for a 1 bit)
+const int DCC_ZERO = 1600 - 1;  // 100us (half period for a 0 bit)
 
 // FSM to control DCC frame
 const byte PREAMBLE = 0;
-const byte GAP1 = 1;
-const byte VALUE1 = 2;
-const byte GAP2 = 3;
-const byte VALUE2 = 4;
-const byte GAP3 = 5;
-const byte VALUE3 = 6;
+const byte GAP = 1;
+const byte VALUE = 2;
+const byte IDLE = 3;
 
-volatile byte state = PREAMBLE;
+volatile byte state = IDLE;
 volatile byte count = 100;  // extended preamble to handle startup
+
+volatile byte idx;
+volatile byte frame[4];
+volatile byte frame_size;
 
 void setup() {
   pinMode(PIN_DCC, OUTPUT);
@@ -42,104 +45,70 @@ void setup() {
 }
 
 void loop() {
-  // put your main code here, to run repeatedly:
+  static byte i = 0;
 
+  if (state == IDLE) {
+    if (i++ % 2) {
+      frame[0] = frame[2] = 0xff;
+      frame[1] = 0;
+    } else {
+      frame[0] = 3;
+      frame[1] = 0x58;
+      frame[2] = 3 ^ 0x58;
+    }
+
+    frame_size = 3;
+    idx = 0;
+
+    state = PREAMBLE;
+    count = 15;
+  }
 }
 
+/*
+ * Generates DCC frame from timer and frame[].
+ */
 ISR(TIMER5_COMPA_vect) {
   static byte value = 0;
   static byte toggle = 1;
 
   digitalWrite(PIN_DEBUG1, HIGH);
 
-  toggle ^= 1;
+  toggle ^= 1;  // ignore every second interrupt to allow a full high/low cycle
 
   if (toggle) {
-    switch(state) {
+    switch (state) {
       case PREAMBLE:
         if (--count == 0) {
-          state = GAP1;
+          state = GAP;
           count = 1;
           OCR5A = DCC_ZERO;
         }
         break;
-      case GAP1:
+      case GAP:
         if (--count == 0) {
-          state = VALUE1;
+          state = VALUE;
           digitalWrite(PIN_DEBUG2, HIGH);
           count = 8;
-          value = 0xa5;
-          if (value & 0b10000000) {
+          value = frame[idx++];
+          if(value & 0b10000000) {
             OCR5A = DCC_ONE;
           } else {
             OCR5A = DCC_ZERO;
           }
         }
         break;
-      case VALUE1:
+      case VALUE:
         if (--count == 0) {
-          state = GAP2;
+          if (idx >= frame_size) {
+            state = IDLE;
+            OCR5A = DCC_ONE;
+          } else {
+            state = GAP;
+            count = 1;
+            OCR5A = DCC_ZERO;
+          }
           digitalWrite(PIN_DEBUG2, LOW);
-          count = 1;
-          OCR5A = DCC_ZERO;
-        } else {
-          // shift left
-          value = value << 1;
-          if (value & 0b10000000) {
-            OCR5A = DCC_ONE;
-          } else {
-            OCR5A = DCC_ZERO;
-          }
-        }
-        break;
-      case GAP2:
-        if (--count == 0) {
-          state = VALUE2;
-          digitalWrite(PIN_DEBUG2, HIGH);
-          count = 8;
-          value = 0x33;
-          if (value & 0b10000000) {
-            OCR5A = DCC_ONE;
-          } else {
-            OCR5A = DCC_ZERO;
-          }
-        }
-        break;
-      case VALUE2:
-        if (--count == 0) {
-          state = GAP3;
-          digitalWrite(PIN_DEBUG2, LOW);
-          count = 1;
-          OCR5A = DCC_ZERO;
-        } else {
-          // shift left
-          value = value << 1;
-          if (value & 0b10000000) {
-            OCR5A = DCC_ONE;
-          } else {
-            OCR5A = DCC_ZERO;
-          }
-        }
-        break;
-      case GAP3:
-        if (--count == 0) {
-          state = VALUE3;
-          digitalWrite(PIN_DEBUG2, HIGH);
-          count = 8;
-          value = 0xcc;
-          if (value & 0b10000000) {
-            OCR5A = DCC_ONE;
-          } else {
-            OCR5A = DCC_ZERO;
-          }
-        }
-        break;
-      case VALUE3:
-        if (--count == 0) {
-          state = PREAMBLE;
-          digitalWrite(PIN_DEBUG2, LOW);
-          count = 14;
-          OCR5A = DCC_ONE;
         } else {
           // shift left
           value = value << 1;
@@ -151,8 +120,7 @@ ISR(TIMER5_COMPA_vect) {
         }
         break;
       default:
-        state = PREAMBLE;
-        count = 14;
+        state = IDLE;
         OCR5A = DCC_ONE;
     }
   }
